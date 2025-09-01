@@ -1,148 +1,102 @@
 from fastapi import FastAPI, APIRouter, HTTPException
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from starlette.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional
-import uuid
-from datetime import datetime
-import aiosmtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 
-
+# Define the root directory of the backend
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-# Create the main app without a prefix
+# Create the main FastAPI app
 app = FastAPI()
 
-# Create a router with the /api prefix
+# Create an API router with a /api prefix
 api_router = APIRouter(prefix="/api")
 
-
-# Define Models
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
+# --- API Models ---
 
 class ContactForm(BaseModel):
+    """Pydantic model to validate the contact form data."""
     name: str
     email: EmailStr
     company: Optional[str] = None
     phone: Optional[str] = None
     message: str
 
-# Email configuration
-async def send_email(contact_data: ContactForm):
-    """Send contact form data via email"""
-    try:
-        # Create message
-        msg = MIMEMultipart()
-        msg['From'] = "noreply@acencia.de"
-        msg['To'] = "philipp.weimert@acencia.de"
-        msg['Subject'] = f"Neue Kontaktanfrage von {contact_data.name}"
+# --- API Endpoints ---
 
-        # Email body
-        body = f"""
-Neue Kontaktanfrage über die Website:
-
-Name: {contact_data.name}
-E-Mail: {contact_data.email}
-Unternehmen: {contact_data.company or 'Nicht angegeben'}
-Telefon: {contact_data.phone or 'Nicht angegeben'}
-
-Nachricht:
-{contact_data.message}
-
----
-Gesendet am: {datetime.now().strftime('%d.%m.%Y um %H:%M:%S')}
-"""
-
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
-
-        # For now, we'll use a simple SMTP setup that would work with most providers
-        # In production, you would configure this with your actual SMTP settings
-        
-        # Since we don't have SMTP credentials configured, we'll save to database instead
-        # and log the email content
-        
-        # Save contact form submission to database
-        contact_dict = contact_data.dict()
-        contact_dict['id'] = str(uuid.uuid4())
-        contact_dict['timestamp'] = datetime.utcnow()
-        contact_dict['status'] = 'sent'
-        
-        await db.contact_submissions.insert_one(contact_dict)
-        
-        # Log the email content for now (in production, this would actually send)
-        logger.info(f"Contact form submission: {body}")
-        
-        return {"status": "success", "message": "Nachricht erfolgreich gesendet"}
-        
-    except Exception as e:
-        logger.error(f"Failed to send email: {str(e)}")
-        raise HTTPException(status_code=500, detail="Fehler beim Senden der Nachricht")
-
-# Add your routes to the router instead of directly to app
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.dict()
-    status_obj = StatusCheck(**status_dict)
-    _ = await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**status_check) for status_check in status_checks]
+    """A simple root endpoint for the API."""
+    return {"message": "Acencia API is running"}
 
 @api_router.post("/contact")
 async def submit_contact_form(contact_data: ContactForm):
-    """Handle contact form submission"""
-    try:
-        result = await send_email(contact_data)
-        return result
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"Unexpected error in contact form: {str(e)}")
-        raise HTTPException(status_code=500, detail="Ein unerwarteter Fehler ist aufgetreten")
+    """
+    Handles contact form submissions.
+    This is a mock endpoint. It validates the data and returns a success
+    response without saving the data to a database.
+    """
+    # In a real application, you would add logic here to
+    # send an email or save the data.
+    # For this version, we just log it to the console.
+    logger.info(f"Received contact form submission from: {contact_data.name} ({contact_data.email})")
+    logger.info(f"Message: {contact_data.message}")
 
-# Include the router in the main app
+    return {"status": "success", "message": "Nachricht erfolgreich gesendet"}
+
+# Include the API router in the main app
 app.include_router(api_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# --- Frontend Serving ---
 
-# Configure logging
+# Define the path to the frontend build directory
+# This assumes the frontend is in a sibling directory to the backend
+FRONTEND_BUILD_DIR = ROOT_DIR.parent / "frontend" / "build"
+
+# Check if the frontend build directory exists
+if not FRONTEND_BUILD_DIR.exists():
+    logger.error(f"Frontend build directory not found at: {FRONTEND_BUILD_DIR}")
+    logger.error("Please build the frontend first by running 'npm run build' in the 'frontend' directory.")
+else:
+    # Mount the static files directory (for JS, CSS, images, etc.)
+    app.mount(
+        "/static",
+        StaticFiles(directory=FRONTEND_BUILD_DIR / "static"),
+        name="static"
+    )
+
+    # Catch-all route to serve the frontend's index.html
+    # This enables client-side routing in the React app
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        # Construct the full path to the requested file
+        file_path = FRONTEND_BUILD_DIR / full_path
+
+        # If the requested path is a file that exists, serve it.
+        # Otherwise, serve the main index.html file.
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        else:
+            return FileResponse(FRONTEND_BUILD_DIR / "index.html")
+
+# --- Logging Configuration ---
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+# --- Server Startup ---
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Application startup complete.")
+    if not FRONTEND_BUILD_DIR.exists():
+        logger.warning("Serving API only. Frontend not found.")
+    else:
+        logger.info(f"Serving frontend from: {FRONTEND_BUILD_DIR}")

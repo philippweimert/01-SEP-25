@@ -30,10 +30,7 @@ const ContactPage = () => {
     e.preventDefault();
     
     try {
-      // Get backend URL from environment
-      const backendUrl = process.env.REACT_APP_BACKEND_URL || import.meta.env.REACT_APP_BACKEND_URL;
-      
-      const response = await fetch(`${backendUrl}/api/contact`, {
+      const response = await fetch(`/api/contact`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
